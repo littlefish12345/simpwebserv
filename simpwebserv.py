@@ -2,6 +2,7 @@ from urllib import parse
 import threading
 import traceback
 import socket
+import time
 import ssl
 
 __version__ = '0.1'
@@ -28,10 +29,11 @@ class server():
             self.full_function_path_requier_map[(path,i)] = (requier_args,requier_cookie,requier_get_parameter,requier_post_parameter,requier_header,requier_body,requier_method)
     def run(self,port=5000,host='127.0.0.1',debug=False,KeepAlive=False): #KeepAlive没做好
         def __simpwebserv_process_func__(conn,addr,full_function_path_map,full_function_path_requier_map):
+            t1 = time.time()
             data = conn.recv(__simpwebserv_buffer_size__)
             data_split = data.split(b'\r\n\r\n')
             header_split = data_split[0].decode(__simpwebserv_coding__).split('\r\n') #报文头
-            body = data_split[0] #报文体
+            body = data_split[1] #报文体
             header_first_line = header_split[0].split(' ')
             del header_split[0]
             method = header_first_line[0] #请求方法
@@ -43,7 +45,7 @@ class server():
                 header_map[i_split[0]] = i_split[1]
             try:
                 while True: #如果没有获取完就不断获取
-                    if len(data) < int(header_map['Content-Length']):
+                    if len(body) < int(header_map['Content-Length']):
                         body = body + conn.recv(__simpwebserv_buffer_size__)
                     else:
                         break
@@ -65,10 +67,10 @@ class server():
             if method == 'POST': #POST请求传参处理
                 Content_Type_list = header_map['Content-Type'].split('; ')
                 if Content_Type_list[0] == 'application/x-www-form-urlencoded': #原生form
-                    post_parameter_body_list = body.deocde(__simpwebserv_coding__).split('&')
+                    post_parameter_body_list = body.decode(__simpwebserv_coding__).split('&')
                     post_parameter_map = {} #post参数
                     for i in post_parameter_body_list:
-                        i_split = i.split('&')
+                        i_split = i.split('=')
                         post_parameter_map[parse.unquote(i_split[0])] = parse.unquote(i_split[1])
                 if Content_Type_list[0] == 'multipart/form-data': #文件上传form
                     pass #没做好
@@ -87,7 +89,7 @@ class server():
                             args['get_parameter'] = {}
                     if full_function_path_requier_map[(path,method)][3]:
                         if 'post_parameter_map' in vars():
-                            args['post_parameter'] = get_parameter_map
+                            args['post_parameter'] = post_parameter_map
                         else:
                             args['post_parameter'] = {}
                     if full_function_path_requier_map[(path,method)][4]:
@@ -95,16 +97,29 @@ class server():
                     if full_function_path_requier_map[(path,method)][5]:
                         args['body'] = body
                     if full_function_path_requier_map[(path,method)][6]:
-                        args['method'] = method
-                    result = full_function_path_map[(path,method)](args=args)
+                        if method == 'HEAD':
+                            args['method'] = 'GET'
+                        else:
+                            args['method'] = method
+                    if method == 'HEAD':
+                        result = full_function_path_map[(path,'GET')](args=args)
+                    else:
+                        result = full_function_path_map[(path,method)](args=args)
                 else:
-                    result = full_function_path_map[(path,method)]()
+                    if method == 'HEAD':
+                        result = full_function_path_map[(path,'GET')]
+                    else:
+                        result = full_function_path_map[(path,method)]
                 if isinstance(result,str):
                     conn.send(('HTTP/1.1 200 OK\r\nServer: python/simpwebserv\r\nConnection: close\r\n\r\n'+result).encode(__simpwebserv_coding__))
                     conn.close()
                     status_code = '200'
                 else:
                     pass #没做好
+            except KeyError as e:
+                conn.send('HTTP/1.1 404 NOT FOUND\r\nServer: python/simpwebserv\r\nConnection: close\r\n\r\n404 NOT FOUND'.encode(__simpwebserv_coding__))
+                conn.close()
+                status_code = '500'
             except Exception as e:
                 if debug:
                     conn.send(('HTTP/1.1 500 ERROR\r\nServer: python/simpwebserv\r\nConnection: close\r\n\r\n500 error\r\n\r\nlog:\r\n'+traceback.format_exc()).encode(__simpwebserv_coding__))
@@ -113,9 +128,12 @@ class server():
                 conn.close()
                 status_code = '500'
             print(method+' '+path+' '+status_code+' '+addr[0])
-        sock = socket.socket()
+            t2 = time.time()
+            #print(str((t2-t1)*1000)+'ms')
+        sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
         sock.bind((host,port))
-        sock.listen(0)
+        sock.listen(5)
+        print('Server is running on http://'+host+':'+str(port))
         while True:
             conn,addr = sock.accept()
             t = threading.Thread(target=__simpwebserv_process_func__,args=(conn,addr,self.full_function_path_map,self.full_function_path_requier_map))
