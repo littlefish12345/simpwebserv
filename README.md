@@ -1,10 +1,10 @@
 # simpwebserv
 
-##简介
+## 简介
 
 一个简单的给python的http服务器库
 
-##使用方法
+## 使用方法
 
 首先你得import这个库
 ```
