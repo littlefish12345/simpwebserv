@@ -1,6 +1,7 @@
 from urllib import parse
 import threading
 import traceback
+import datetime
 import socket
 import time
 import ssl
@@ -10,6 +11,69 @@ __author__ = ['little_fish12345']
 
 __simpwebserv_coding__ = 'utf-8'
 __simpwebserv_buffer_size__ = 524288
+
+class response():
+    def __init__(self):
+        self.status_code = '200'
+        self.status_code_text = 'OK'
+        self.body = b''
+        self.Content_Type = 'text/html'
+        self.Content_Disposition = None
+        self.Set_Cookie = None
+        self.Location = None
+    def set_status_code(self,status_code,text):
+        self.status_code = status_code
+        self.status_code_text = text
+    def set_Content_Type(self,Content_Type):
+        self.Content_Type = Content_Type
+    def set_Content_Disposition(self,Content_Disposition):
+        self.Content_Disposition = Content_Disposition
+    def set_Cookie(self,key,value, #键值
+                   path=None, #指定路径
+                   domain=None, #指定域名
+                   maxage=None): #过期时间(s)
+        if self.Set_Cookie == None:
+            self.Set_Cookie = []
+        set_cookie_text = 'Set-Cookie: '+parse.quote(key)+'='+parse.quote(value)
+        if path != None:
+            set_cookie_text = set_cookie_text+'; Path='+path
+        if domain != None:
+            set_cookie_text = set_cookie_text+'; Domain='+domain
+        if maxage != None:
+            set_cookie_text = set_cookie_text+'Max-Age='+str(maxage)
+        self.Set_Cookie.append(set_cookie_text)
+    def del_Cookie(self,key, #键
+                   path=None, #指定路径
+                   domain=None): #指定域名
+        if self.Set_Cookie == None:
+            self.Set_Cookie = []
+        set_cookie_text = 'Set-Cookie: '+parse.quote(key)+'='
+        if path != None:
+            set_cookie_text = set_cookie_text+'; Path='+path
+        if domain != None:
+            set_cookie_text = set_cookie_text+'; Domain='+domain
+        set_cookie_text = set_cookie_text+'Max-Age=0'
+        self.Set_Cookie.append(set_cookie_text)
+    def jump_to(self,Location):
+        self.Location = Location
+        self.status_code = '302'
+        self.status_code_text = 'JUMP'
+    def set_text(self,text):
+        self.Content_Type = 'text/plain'
+        self.body = text.encode(__simpwebserv_coding__)
+    def set_html(self,html):
+        self.Content_Type = 'text/html'
+        self.body = html.encode(__simpwebserv_coding__)
+    def set_css(self,css):
+        self.Content_Type = 'text/css'
+        self.body = css.encode(__simpwebserv_coding__)
+    def set_js(self,js):
+        self.Content_Type = 'application/x-javascript'
+        self.body = js.encode(__simpwebserv_coding__)
+    def transform_file(self,file,filename):
+        self.Content_Type = 'application/octet-stream'
+        self.body = file
+        self.Content_Disposition = 'attachment; filename='+filename
 
 class server():
     def __init__(self):
@@ -29,7 +93,7 @@ class server():
             self.full_function_path_requier_map[(path,i)] = (requier_args,requier_cookie,requier_get_parameter,requier_post_parameter,requier_header,requier_body,requier_method)
     def run(self,port=5000,host='127.0.0.1',debug=False,KeepAlive=False): #KeepAlive没做好
         def __simpwebserv_process_func__(conn,addr,full_function_path_map,full_function_path_requier_map):
-            t1 = time.time()
+            #t1 = time.time()
             data = conn.recv(__simpwebserv_buffer_size__)
             data_split = data.split(b'\r\n\r\n')
             header_split = data_split[0].decode(__simpwebserv_coding__).split('\r\n') #报文头
@@ -111,24 +175,35 @@ class server():
                     else:
                         result = full_function_path_map[(path,method)]
                 if isinstance(result,str):
-                    conn.send(('HTTP/1.1 200 OK\r\nServer: python/simpwebserv\r\nConnection: close\r\n\r\n'+result).encode(__simpwebserv_coding__))
+                    conn.send(('HTTP/1.1 200 OK\r\nServer: python/simpwebserv\r\nContent-Type: text/html\r\nExpires: '+datetime.datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')+'\r\nConnection: close\r\n\r\n'+result).encode(__simpwebserv_coding__))
                     conn.close()
                     status_code = '200'
                 else:
-                    pass #没做好
+                    status_code = result.status_code
+                    http_send = 'HTTP/1.1 '+status_code+' '+result.status_code_text+'\r\nServer: python/simpwebserv\r\nConnection: close\r\nContent-Type: '+result.Content_Type+'\r\n'
+                    if result.Content_Disposition != None:
+                        http_send = http_send+'Content_Disposition: '+result.Content_Disposition+'\r\n'
+                    if result.Set_Cookie != None:
+                        for i in result.Set_Cookie:
+                            http_send = http_send+i+'\r\n'
+                    if result.Location != None:
+                        http_send = http_send+'Location: '+result.Location+'\r\n\r\n'
+                    http_send = http_send+'\r\n'
+                    conn.send(http_send.encode(__simpwebserv_coding__)+result.body)
+                    conn.close()
             except KeyError as e:
-                conn.send('HTTP/1.1 404 NOT FOUND\r\nServer: python/simpwebserv\r\nConnection: close\r\n\r\n404 NOT FOUND'.encode(__simpwebserv_coding__))
+                conn.send('HTTP/1.1 404 NOT FOUND\r\nServer: python/simpwebserv\r\nContent-Type: text/html\r\nExpires: '+datetime.datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')+'\r\nConnection: close\r\n\r\n404 NOT FOUND'.encode(__simpwebserv_coding__))
                 conn.close()
                 status_code = '500'
             except Exception as e:
                 if debug:
-                    conn.send(('HTTP/1.1 500 ERROR\r\nServer: python/simpwebserv\r\nConnection: close\r\n\r\n500 error\r\n\r\nlog:\r\n'+traceback.format_exc()).encode(__simpwebserv_coding__))
+                    conn.send(('HTTP/1.1 500 ERROR\r\nServer: python/simpwebserv\r\nContent-Type: text/html\r\nExpires: '+datetime.datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')+'\r\nConnection: close\r\n\r\n500 error\r\n\r\nlog:\r\n'+traceback.format_exc()).encode(__simpwebserv_coding__))
                 else:
-                    conn.send('HTTP/1.1 500 ERROR\r\nServer: python/simpwebserv\r\nConnection: close\r\n\r\n500 error'.encode(__simpwebserv_coding__))
+                    conn.send('HTTP/1.1 500 ERROR\r\nServer: python/simpwebserv\r\nContent-Type: text/html\r\nExpires: '+datetime.datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')+'\r\nConnection: close\r\n\r\n500 error'.encode(__simpwebserv_coding__))
                 conn.close()
                 status_code = '500'
             print(method+' '+path+' '+status_code+' '+addr[0])
-            t2 = time.time()
+            #t2 = time.time()
             #print(str((t2-t1)*1000)+'ms')
         sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
         sock.bind((host,port))
