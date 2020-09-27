@@ -95,6 +95,9 @@ class server():
         def __simpwebserv_process_func__(conn,addr,full_function_path_map,full_function_path_requier_map):
             #t1 = time.time()
             data = conn.recv(__simpwebserv_buffer_size__)
+            if data == b'':
+                conn.close()
+                return
             data_split = data.split(b'\r\n\r\n')
             header_split = data_split[0].decode(__simpwebserv_coding__).split('\r\n') #报文头
             body = data_split[1] #报文体
@@ -192,7 +195,7 @@ class server():
                     conn.send(http_send.encode(__simpwebserv_coding__)+result.body)
                     conn.close()
             except KeyError as e:
-                conn.send('HTTP/1.1 404 NOT FOUND\r\nServer: python/simpwebserv\r\nContent-Type: text/html\r\nExpires: '+datetime.datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')+'\r\nConnection: close\r\n\r\n404 NOT FOUND'.encode(__simpwebserv_coding__))
+                conn.send(('HTTP/1.1 404 NOT FOUND\r\nServer: python/simpwebserv\r\nContent-Type: text/html\r\nExpires: '+datetime.datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')+'\r\nConnection: close\r\n\r\n404 NOT FOUND').encode(__simpwebserv_coding__))
                 conn.close()
                 status_code = '500'
             except Exception as e:
