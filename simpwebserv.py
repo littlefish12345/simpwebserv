@@ -174,9 +174,9 @@ class server():
                         result = full_function_path_map[(path,method)](args=args)
                 else:
                     if method == 'HEAD':
-                        result = full_function_path_map[(path,'GET')]
+                        result = full_function_path_map[(path,'GET')]()
                     else:
-                        result = full_function_path_map[(path,method)]
+                        result = full_function_path_map[(path,method)]()
                 if isinstance(result,str):
                     conn.send(('HTTP/1.1 200 OK\r\nServer: python/simpwebserv\r\nContent-Type: text/html\r\nExpires: '+datetime.datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')+'\r\nConnection: close\r\n\r\n'+result).encode(__simpwebserv_coding__))
                     conn.close()
@@ -185,7 +185,7 @@ class server():
                     status_code = result.status_code
                     http_send = 'HTTP/1.1 '+status_code+' '+result.status_code_text+'\r\nServer: python/simpwebserv\r\nConnection: close\r\nContent-Type: '+result.Content_Type+'\r\n'
                     if result.Content_Disposition != None:
-                        http_send = http_send+'Content_Disposition: '+result.Content_Disposition+'\r\n'
+                        http_send = http_send+'Content-Disposition: '+result.Content_Disposition+'\r\n'
                     if result.Set_Cookie != None:
                         for i in result.Set_Cookie:
                             http_send = http_send+i+'\r\n'
@@ -197,7 +197,7 @@ class server():
             except KeyError as e:
                 conn.send(('HTTP/1.1 404 NOT FOUND\r\nServer: python/simpwebserv\r\nContent-Type: text/html\r\nExpires: '+datetime.datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')+'\r\nConnection: close\r\n\r\n404 NOT FOUND').encode(__simpwebserv_coding__))
                 conn.close()
-                status_code = '500'
+                status_code = '404'
             except Exception as e:
                 if debug:
                     conn.send(('HTTP/1.1 500 ERROR\r\nServer: python/simpwebserv\r\nContent-Type: text/html\r\nExpires: '+datetime.datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')+'\r\nConnection: close\r\n\r\n500 error\r\n\r\nlog:\r\n'+traceback.format_exc()).encode(__simpwebserv_coding__))
