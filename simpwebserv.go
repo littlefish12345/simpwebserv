@@ -1,13 +1,10 @@
 package simpwebserv
 
 import (
-	//"io"
 	"log"
 	"net"
 	"time"
 	"bytes"
-	//"bufio"
-	//"errors"
 	"strings"
 	"strconv"
 	"container/list"
@@ -17,7 +14,7 @@ const (
 	bufferSize = 16384
 )
 
-type SimpwebservResponse struct {
+type SimpwebservResponse struct { //响应的结构体
 	Protocol string
 	Code string
 	CodeName string
@@ -26,7 +23,7 @@ type SimpwebservResponse struct {
 	ToDoCommand string
 }
 
-type SimpwebservRequest struct {
+type SimpwebservRequest struct { //请求的结构体
 	Method string
 	Path string
 	Protocol string
@@ -34,19 +31,19 @@ type SimpwebservRequest struct {
 	Conn net.Conn
 }
 
-type SimpwebservUrlNode struct {
+type SimpwebservUrlNode struct { //单个path的节点
 	Name string
 	NextLayer *list.List
 	IncludeBack bool
 	Function func(*SimpwebservRequest) *SimpwebservResponse
 }
 
-type SimpwebservApp struct {
+type SimpwebservApp struct { //实例的结构体
 	Listener net.Listener
 	UrlMap SimpwebservUrlNode
 }
 
-func App() SimpwebservApp {
+func App() SimpwebservApp { //生成新实例
 	app := SimpwebservApp{nil, SimpwebservUrlNode{"root", list.New(),false ,nil}}
 	app.UrlMap.Name = "root"
 	app.UrlMap.NextLayer = list.New()
@@ -54,16 +51,16 @@ func App() SimpwebservApp {
 	return app
 }
 
-func (app *SimpwebservApp) Register (function func(*SimpwebservRequest) *SimpwebservResponse, path string) {
+func (app *SimpwebservApp) Register (function func(*SimpwebservRequest) *SimpwebservResponse, path string) { //注册一个路径到一个函数上
 	pathList := strings.Split(path, "/")[1:]
 	includeBack := false
-	if pathList[len(pathList) - 1] == "" {
+	if pathList[len(pathList) - 1] == "" { //如果路径最后一个字符是/，那么以后的路径都会匹配到这个函数上
 		includeBack = true
 		pathList = pathList[:len(pathList)-1]
 	}
 	nowNode := &app.UrlMap
 	var tempNode *SimpwebservUrlNode
-	for i := 0; i < len(pathList); i++ {
+	for i := 0; i < len(pathList); i++ { //节点树的遍历，有就进入，没就创造
 		j := nowNode.NextLayer.Front()
 		for {
 			if j == nil {
@@ -84,17 +81,24 @@ func (app *SimpwebservApp) Register (function func(*SimpwebservRequest) *Simpweb
 	nowNode.Function = function
 }
 
-func BuildResponse() *SimpwebservResponse {
-	request := SimpwebservResponse{"HTTP/1.1", "200", "OK", make(map[string]string), new(bytes.Buffer), ""}
-	request.Header["Date"] = time.Now().UTC().Format(time.RFC1123)
-	request.Header["Content-Type"] = "text/html"
-	request.Header["Connection"] = "Close"
-	return &request
+func BuildBasicResponse() *SimpwebservResponse { //创建默认的响应
+	response := SimpwebservResponse{"HTTP/1.1", "200", "OK", make(map[string]string), new(bytes.Buffer), ""}
+	response.Header["Date"] = time.Now().UTC().Format(time.RFC1123) //懒得把UTC改成GMT了
+	response.Header["Content-Type"] = "text/html"
+	return &response
 }
 
-func runFunction (path string, request *SimpwebservRequest, app *SimpwebservApp) *SimpwebservResponse {
-	path = strings.Split(path, "?")[0]
-	if path == "/" && app.UrlMap.Function != nil {
+func BuildNotFoundResponse() *SimpwebservResponse {
+	response := SimpwebservResponse{"HTTP/1.1", "404", "NotFound", make(map[string]string), new(bytes.Buffer), ""}
+	response.Header["Date"] = time.Now().UTC().Format(time.RFC1123) //懒得把UTC改成GMT了
+	response.Header["Content-Type"] = "text/html"
+	response.Body.Write([]byte("404 Not Found"))
+	return &response
+}
+
+func runFunction (path string, request *SimpwebservRequest, app *SimpwebservApp) *SimpwebservResponse { //通过path搜索函数并运行获取返回值
+	path = strings.Split(path, "?")[0] //去掉GET请求部分
+	if path == "/" && app.UrlMap.Function != nil { //对于根目录的特殊处理
 		return app.UrlMap.Function(request)
 	}
 	pathList := strings.Split(path, "/")[1:]
@@ -103,12 +107,8 @@ func runFunction (path string, request *SimpwebservRequest, app *SimpwebservApp)
 	for i := 0; i < len(pathList); i++ {
 		j := nowNode.NextLayer.Front()
 		for {
-			if j == nil {
-				response := BuildResponse()
-				response.Code = "404"
-				response.CodeName = "Not Found"
-				response.Body.Write([]byte("404 Not Found"))
-				return response
+			if j == nil { //路径没注册返回404
+				return BuildNotFoundResponse()
 			}
 			tempNode, _ = (j.Value).(*SimpwebservUrlNode)
 			if tempNode.Name == pathList[i] {
@@ -121,27 +121,24 @@ func runFunction (path string, request *SimpwebservRequest, app *SimpwebservApp)
 			j = j.Next()
 		}
 	}
-	if nowNode.Function == nil {
-		response := BuildResponse()
-		response.Code = "404"
-		response.CodeName = "Not Found"
-		response.Body.Write([]byte("404 Not Found"))
-		return response
+	if nowNode.Function == nil { //函数不存在返回404
+		return BuildNotFoundResponse()
 	}
 	blurryPath:
 	response := nowNode.Function(request)
 	return response
 }
 
-func connectionHandler(conn net.Conn, app *SimpwebservApp, j int) {
+func connectionHandler(conn net.Conn, app *SimpwebservApp) { //处理连接
 	defer conn.Close()
 	buffer := make([]byte, bufferSize)
+	request := SimpwebservRequest{"", "", "", make(map[string]string), conn}
+	tempByte := make([]byte, 1)
+	var err error
+	var byteCount int
+	var headerList []string
 	for {
-		request := SimpwebservRequest{"", "", "", make(map[string]string), conn}
-		tempByte := make([]byte, 1)
-		var err error
-		var byteCount int
-		for i := 0; ; i++ {
+		for i := 0; ; i++ { //获取请求
 			byteCount, err = conn.Read(tempByte)
 			if err != nil {
 				return
@@ -156,10 +153,10 @@ func connectionHandler(conn net.Conn, app *SimpwebservApp, j int) {
 				}
 			}
 		}
-		headerList := strings.Split(string(buffer), "\r\n")
-		headerList = headerList[:len(headerList)-2]
+		headerList = strings.Split(string(buffer), "\r\n")
+		headerList = headerList[:len(headerList)-2] //去掉最后的空项
 
-		requestList := strings.Split(headerList[0], " ")
+		requestList := strings.Split(headerList[0], " ") //解析协议，请求方式和路径
 		requestMethod := requestList[0]
 		requestPath := requestList[1]
 		requestProtocol := requestList[2]
@@ -169,15 +166,16 @@ func connectionHandler(conn net.Conn, app *SimpwebservApp, j int) {
 		request.Path = requestPath
 		request.Protocol = requestProtocol
 
-		for i := 0; i < len(headerList); i++ {
+		for i := 0; i < len(headerList); i++ { //解析头部
 			lineList := strings.Split(headerList[i], ": ")
 			if len(lineList) == 2 {
 				request.Header[lineList[0]] = lineList[1]
 			}
 		}
 
-		response := runFunction(request.Path, &request, app)
+		response := runFunction(request.Path, &request, app) //生成响应
 		response.Header["Content-Length"] = strconv.Itoa(response.Body.Len())
+		response.Header["Connection"] = "Close" //虽然理论上支持长连接了，但是以后处理请求的body会很麻烦，所以先全部短连接
 		log.Println(conn.RemoteAddr().String() + " " + request.Method + " " + request.Path + " " + response.Code + " " + response.CodeName)
 
 		conn.Write([]byte(response.Protocol + " " + response.Code + " " + response.CodeName + "\r\n"))
@@ -189,10 +187,9 @@ func connectionHandler(conn net.Conn, app *SimpwebservApp, j int) {
 		conn.Write([]byte(header))
 		conn.Write(response.Body.Bytes())
 	}
-	conn.Close()
 }
 
-func (app *SimpwebservApp) Run (host string, port uint16) {
+func (app *SimpwebservApp) Run (host string, port uint16) { //运行实例
 	allHost := host + ":" + strconv.Itoa(int(port))
 	log.Println("Server is starting at: " + allHost)
 	listener, err := net.Listen("tcp", allHost)
@@ -201,14 +198,12 @@ func (app *SimpwebservApp) Run (host string, port uint16) {
 		return
 	}
 	app.Listener = listener
-	i := 0
 	for {
 		conn, err := app.Listener.Accept()
 		if err != nil {
 			log.Fatal("Server accept error: " + err.Error())
 			continue
 		}
-		go connectionHandler(conn, app, i)
-		i++
+		go connectionHandler(conn, app)
 	}
 }
