@@ -1,12 +1,15 @@
 package simpwebserv
 
 import (
+	"os"
 	"log"
 	"net"
 	"time"
 	"bytes"
 	"strings"
 	"strconv"
+	"net/url"
+	"io/ioutil"
 	"container/list"
 )
 
@@ -84,19 +87,82 @@ func (app *SimpwebservApp) Register (function func(*SimpwebservRequest) *Simpweb
 func BuildBasicResponse() *SimpwebservResponse { //创建默认的响应
 	response := SimpwebservResponse{"HTTP/1.1", "200", "OK", make(map[string]string), new(bytes.Buffer), ""}
 	response.Header["Date"] = time.Now().UTC().Format(time.RFC1123) //懒得把UTC改成GMT了
-	response.Header["Content-Type"] = "text/html"
+	response.Header["Content-Type"] = "text/html; charset=utf-8"
 	return &response
 }
 
-func BuildNotFoundResponse() *SimpwebservResponse {
-	response := SimpwebservResponse{"HTTP/1.1", "404", "NotFound", make(map[string]string), new(bytes.Buffer), ""}
-	response.Header["Date"] = time.Now().UTC().Format(time.RFC1123) //懒得把UTC改成GMT了
-	response.Header["Content-Type"] = "text/html"
+func BuildNotFoundResponse() *SimpwebservResponse { //创建404响应
+	response := BuildBasicResponse()
+	response.Code = "404"
+	response.CodeName = "Not Found"
 	response.Body.Write([]byte("404 Not Found"))
-	return &response
+	return response
 }
 
-func runFunction (path string, request *SimpwebservRequest, app *SimpwebservApp) *SimpwebservResponse { //通过path搜索函数并运行获取返回值
+func BuildJumpResponse(target string) *SimpwebservResponse { //创建302响应
+	response := BuildBasicResponse()
+	response.Code = "302"
+	response.CodeName = "Found"
+	response.Header["Location"] = target
+	return response
+}
+
+func SendStaticFile(path string, contentType string) *SimpwebservResponse { //传输一个静态文件
+	f, err := os.Open(path)
+	if err != nil {
+		return BuildNotFoundResponse()
+	}
+	defer f.Close()
+	data, err := ioutil.ReadAll(f)
+	if err != nil {
+		return BuildNotFoundResponse()
+	}
+	response := BuildBasicResponse()
+	response.Header["Content-Type"] = contentType
+	response.Body.Write(data)
+	return response
+}
+
+func DecodeGETRequest(request *SimpwebservRequest) map[string]string { //解码GET请求参数
+	pathList := strings.Split(request.Path, "?")
+	GETMap := make(map[string]string)
+	if len(pathList) == 1 {
+		return GETMap
+	}
+	GETList := strings.Split(pathList[1], "&")
+	for i := 0; i < len(GETList); i++ {
+		lineList := strings.Split(GETList[i], "=")
+		GETMap[lineList[0]] = lineList[1]
+	}
+	return GETMap
+}
+
+func DecodeFormRequest(request *SimpwebservRequest) map[string]string { //解码POST的form表单
+	FormMap := make(map[string]string)
+	if request.Method == "POST" {
+		if contentType, ok := request.Header["Content-Type"]; ok {
+			if contentLength, ok := request.Header["Content-Length"]; ok {
+				if contentType == "application/x-www-form-urlencoded" {
+					dataLength, _ := strconv.Atoi(contentLength)
+					data := make([]byte, dataLength)
+					byteCount, err := request.Conn.Read(data)
+					if err != nil || byteCount != dataLength {
+						return FormMap
+					}
+					dataString, _ := url.QueryUnescape(string(data))
+					FormList := strings.Split(dataString, "&")
+					for i := 0; i < len(FormList); i++ {
+						lineList := strings.Split(FormList[i], "=")
+						FormMap[lineList[0]] = lineList[1]
+					}
+				}
+			}
+		}
+	}
+	return FormMap
+}
+
+func runFunction(path string, request *SimpwebservRequest, app *SimpwebservApp) *SimpwebservResponse { //通过path搜索函数并运行获取返回值
 	path = strings.Split(path, "?")[0] //去掉GET请求部分
 	if path == "/" && app.UrlMap.Function != nil { //对于根目录的特殊处理
 		return app.UrlMap.Function(request)
@@ -157,14 +223,10 @@ func connectionHandler(conn net.Conn, app *SimpwebservApp) { //处理连接
 		headerList = headerList[:len(headerList)-2] //去掉最后的空项
 
 		requestList := strings.Split(headerList[0], " ") //解析协议，请求方式和路径
-		requestMethod := requestList[0]
-		requestPath := requestList[1]
-		requestProtocol := requestList[2]
-
 		headerList = headerList[1:]
-		request.Method = requestMethod
-		request.Path = requestPath
-		request.Protocol = requestProtocol
+		request.Method = requestList[0]
+		request.Path, _ = url.QueryUnescape(requestList[1])
+		request.Protocol = requestList[2]
 
 		for i := 0; i < len(headerList); i++ { //解析头部
 			lineList := strings.Split(headerList[i], ": ")
@@ -189,7 +251,7 @@ func connectionHandler(conn net.Conn, app *SimpwebservApp) { //处理连接
 	}
 }
 
-func (app *SimpwebservApp) Run (host string, port uint16) { //运行实例
+func (app *SimpwebservApp)Run (host string, port uint16) { //运行实例
 	allHost := host + ":" + strconv.Itoa(int(port))
 	log.Println("Server is starting at: " + allHost)
 	listener, err := net.Listen("tcp", allHost)
