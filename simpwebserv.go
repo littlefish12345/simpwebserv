@@ -1,11 +1,14 @@
 package simpwebserv
 
 import (
+	"io"
 	"os"
 	"log"
 	"net"
 	"time"
 	"bytes"
+	"errors"
+	"runtime"
 	"strings"
 	"strconv"
 	"net/url"
@@ -14,8 +17,10 @@ import (
 )
 
 const (
-	bufferSize = 16384
+	bufferSize = 4096
 )
+
+var FileOverSize = errors.New("File over size")
 
 type SimpwebservResponse struct { //响应的结构体
 	Protocol string
@@ -30,8 +35,9 @@ type SimpwebservRequest struct { //请求的结构体
 	Method string
 	Path string
 	Protocol string
+	Host string
 	Header map[string]string
-	Conn net.Conn
+	Body *bytes.Buffer
 }
 
 type SimpwebservUrlNode struct { //单个path的节点
@@ -137,19 +143,13 @@ func DecodeGETRequest(request *SimpwebservRequest) map[string]string { //解码G
 	return GETMap
 }
 
-func DecodeFormRequest(request *SimpwebservRequest) map[string]string { //解码POST的form表单
+func DecodePOSTFormRequest(request *SimpwebservRequest) map[string]string { //解码POST的form表单
 	FormMap := make(map[string]string)
 	if request.Method == "POST" {
 		if contentType, ok := request.Header["Content-Type"]; ok {
-			if contentLength, ok := request.Header["Content-Length"]; ok {
+			if _, ok := request.Header["Content-Length"]; ok {
 				if contentType == "application/x-www-form-urlencoded" {
-					dataLength, _ := strconv.Atoi(contentLength)
-					data := make([]byte, dataLength)
-					byteCount, err := request.Conn.Read(data)
-					if err != nil || byteCount != dataLength {
-						return FormMap
-					}
-					dataString, _ := url.QueryUnescape(string(data))
+					dataString, _ := url.QueryUnescape(string(request.Body.Bytes()))
 					FormList := strings.Split(dataString, "&")
 					for i := 0; i < len(FormList); i++ {
 						lineList := strings.Split(FormList[i], "=")
@@ -160,6 +160,116 @@ func DecodeFormRequest(request *SimpwebservRequest) map[string]string { //解码
 		}
 	}
 	return FormMap
+}
+
+func RecvFile(request *SimpwebservRequest, storePath string, name string, maxSize int) error { //储存提交的文件
+	if request.Method == "POST" {
+		if contentType, ok := request.Header["Content-Type"]; ok {
+			if _, ok := request.Header["Content-Length"]; ok {
+				contentTypeList := strings.Split(contentType, "; ")
+				if contentTypeList[0] == "multipart/form-data" && len(contentTypeList) == 2 {
+					boundaryList := strings.Split(contentTypeList[1], "=")
+					if boundaryList[0] == "boundary" {
+						boundary := boundaryList[1]
+						if boundary[0] == '"' && boundary[len(boundary)-1] == '"' {
+							boundary = boundary[1:len(boundary)-1]
+						}
+						boundary = "--" + boundary
+						packageList := bytes.Split(request.Body.Bytes(), []byte(boundary))
+						packageList = packageList[1:len(packageList)-1]
+						for i := 0; i < len(packageList); i++ {
+							dataList := bytes.Split(packageList[i], []byte("\r\n\r\n"))
+							data := bytes.Join(dataList[1:], []byte("\r\n\r\n"))
+							data = data[:len(data)-2]
+							if len(data) > maxSize && maxSize != 0 {
+								return FileOverSize
+							}
+							headerList := strings.Split(string(dataList[0]), "\r\n")
+							headerList = headerList[1:]
+							headerMap := make(map[string]string)
+							for j := 0; j < len(headerList); j++ {
+								lineList := strings.Split(headerList[j], ": ")
+								headerMap[lineList[0]] = lineList[1]
+							}
+							contentDispositionList := strings.Split(headerMap["Content-Disposition"], "; ")
+							if contentDispositionList[0] == "form-data" {
+								contentDispositionMap := make(map[string]string)
+								for j := 1; j < len(contentDispositionList); j++ {
+									contentDispositionParameter := strings.Split(contentDispositionList[j], "=")
+									contentDispositionMap[contentDispositionParameter[0]] = contentDispositionParameter[1]
+								}
+								if filename, ok := contentDispositionMap["filename"]; ok {
+									if name == "" {
+										if filename[0] == '"' && filename[len(filename)-1] == '"' {
+											filename = filename[1:len(filename)-1]
+										}
+									} else {
+										filename = name
+									}
+									f, err := os.OpenFile(storePath + "/" + filename, os.O_WRONLY|os.O_CREATE, 0666)
+									defer f.Close()
+									byteCount, err := f.Write(data)
+									if err != nil {
+										return err
+									}
+									if byteCount != len(data) {
+										return errors.New("Incomplete file")
+									}
+									f.Close()
+								}
+							}
+						}
+						return nil
+					}
+				}
+			}
+		}
+	}
+	return errors.New("Incorrect request")
+}
+
+func SendFile(request *SimpwebservRequest, contentType string, filePath string, fileName string) *SimpwebservResponse { //支持断点续传的文件下载（占用内存小）
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	response := BuildBasicResponse()
+	response.Header["Accept-Ranges"] = "bytes"
+	response.Header["Content-Disposition"] = "attachment; filename=" + fileName
+	response.Header["Content-Type"] = contentType
+	f, err := os.Stat(filePath)
+	if err != nil {
+		return BuildNotFoundResponse()
+	}
+	fileEnd := f.Size() - 1
+	startPos := 0
+	endPos := int(fileEnd)
+	response.Header["Content-Length"] = strconv.Itoa(endPos - startPos + 1)
+	if dataRange, ok := request.Header["Range"]; ok {
+		dataRangeList := strings.Split(dataRange, "=")
+		if len(dataRangeList) == 2 {
+			rangeList := strings.Split(dataRangeList[1], "-")
+			if len(rangeList) == 2 {
+				response.Code = "206"
+				response.CodeName = "Partial Content"
+				if rangeList[0] != "" {
+					startPos, _ = strconv.Atoi(rangeList[0])
+				}
+				if rangeList[1] != "" {
+					endPos, _ = strconv.Atoi(rangeList[1])
+				}
+				if endPos > int(fileEnd) {
+					endPos = int(fileEnd)
+				}
+				if startPos > endPos {
+					startPos = endPos
+				}
+				response.Header["Content-Length"] = strconv.Itoa(endPos - startPos + 1)
+				response.Header["Content-Range"] = "bytes " + strconv.Itoa(startPos) + "-" + strconv.Itoa(endPos) + "/" + strconv.Itoa(int(fileEnd) + 1)
+			}
+		}
+	}
+	response.ToDoCommand = "SendFile " + strconv.Itoa(startPos) + " " + strconv.Itoa(endPos) + " " + filePath
+	return response
 }
 
 func runFunction(path string, request *SimpwebservRequest, app *SimpwebservApp) *SimpwebservResponse { //通过path搜索函数并运行获取返回值
@@ -195,13 +305,13 @@ func runFunction(path string, request *SimpwebservRequest, app *SimpwebservApp) 
 	return response
 }
 
-func connectionHandler(conn net.Conn, app *SimpwebservApp) { //处理连接
+func connectionHandler(conn net.Conn, app *SimpwebservApp, num int) { //处理连接
 	defer conn.Close()
-	buffer := make([]byte, bufferSize)
-	request := SimpwebservRequest{"", "", "", make(map[string]string), conn}
+	request := SimpwebservRequest{"", "", "", "", make(map[string]string), new(bytes.Buffer)}
 	tempByte := make([]byte, 1)
 	var err error
 	var byteCount int
+	var data bytes.Buffer
 	var headerList []string
 	for {
 		for i := 0; ; i++ { //获取请求
@@ -212,14 +322,15 @@ func connectionHandler(conn net.Conn, app *SimpwebservApp) { //处理连接
 			if byteCount != 1 {
 				break
 			}
-			buffer[i] = tempByte[0]
+			data.Write(tempByte)
 			if i >= 3{
-				if bytes.Equal(buffer[i-3:i+1], []byte("\r\n\r\n")) {
+				if bytes.Equal(data.Bytes()[i-3:i+1], []byte("\r\n\r\n")) {
 					break
 				}
 			}
 		}
-		headerList = strings.Split(string(buffer), "\r\n")
+		headerList = strings.Split(string(data.Bytes()), "\r\n")
+		data.Reset()
 		headerList = headerList[:len(headerList)-2] //去掉最后的空项
 
 		requestList := strings.Split(headerList[0], " ") //解析协议，请求方式和路径
@@ -227,6 +338,7 @@ func connectionHandler(conn net.Conn, app *SimpwebservApp) { //处理连接
 		request.Method = requestList[0]
 		request.Path, _ = url.QueryUnescape(requestList[1])
 		request.Protocol = requestList[2]
+		request.Host = conn.RemoteAddr().String()
 
 		for i := 0; i < len(headerList); i++ { //解析头部
 			lineList := strings.Split(headerList[i], ": ")
@@ -234,11 +346,47 @@ func connectionHandler(conn net.Conn, app *SimpwebservApp) { //处理连接
 				request.Header[lineList[0]] = lineList[1]
 			}
 		}
+		
+		if contentLength, ok := request.Header["Content-Length"]; ok { //获取body
+			dataLength, _ := strconv.Atoi(contentLength)
+			bodyBuffer := make([]byte, bufferSize)
+			i := 0
+			for {
+				byteCount, err = conn.Read(bodyBuffer)
+				if err != nil {
+					log.Println(err)
+					return
+				}
+				i = i + byteCount
+				request.Body.Write(bodyBuffer)
+				if i == dataLength {
+					break
+				}
+			}
+		}
 
 		response := runFunction(request.Path, &request, app) //生成响应
-		response.Header["Content-Length"] = strconv.Itoa(response.Body.Len())
-		response.Header["Connection"] = "Close" //虽然理论上支持长连接了，但是以后处理请求的body会很麻烦，所以先全部短连接
-		log.Println(conn.RemoteAddr().String() + " " + request.Method + " " + request.Path + " " + response.Code + " " + response.CodeName)
+		request.Body.Reset()
+
+		commandList := strings.Split(response.ToDoCommand, " ") //解析命令
+		var startPos int
+		var endPos int
+		var filePath string
+		if len(commandList) != 0 {
+			if commandList[0] == "SendFile" { //目前只支持下载文件的命令
+				startPos, _ = strconv.Atoi(commandList[1])
+				endPos, _ = strconv.Atoi(commandList[2])
+				filePath = strings.Join(commandList[3:], " ")
+			} else {
+				response.Header["Content-Length"] = strconv.Itoa(response.Body.Len())
+			}
+		} else {
+			response.Header["Content-Length"] = strconv.Itoa(response.Body.Len())
+		}
+		
+		response.Header["Connection"] = "Keep-Alive"
+
+		log.Println(request.Host + " " + request.Method + " " + request.Path + " " + response.Code + " " + response.CodeName)
 
 		conn.Write([]byte(response.Protocol + " " + response.Code + " " + response.CodeName + "\r\n"))
 		header := ""
@@ -247,8 +395,42 @@ func connectionHandler(conn net.Conn, app *SimpwebservApp) { //处理连接
 		}
 		header = header + "\r\n"
 		conn.Write([]byte(header))
-		conn.Write(response.Body.Bytes())
+		if len(commandList) != 0 {
+			if commandList[0] == "SendFile" { //下载文件的分段读取发送
+				f, _ := os.Open(filePath)
+				f.Seek(int64(startPos), io.SeekStart)
+				readLength := endPos - startPos + 1
+				buffer := make([]byte, bufferSize)
+				i := 0
+				for {
+					if readLength <= i + bufferSize {
+						break
+					}
+					byteCount , err := f.Read(buffer)
+					if err != nil {
+						log.Println(err.Error())
+						return
+					}
+					conn.Write(buffer)
+					i = i + byteCount
+				}
+				buffer = make([]byte, readLength - i)
+				_ , err := f.Read(buffer)
+				if err != nil {
+					log.Println(err.Error())
+					return
+				}
+				conn.Write(buffer)
+			} else {
+				conn.Write(response.Body.Bytes())
+			}
+		} else {
+			conn.Write(response.Body.Bytes())
+		}
+		response.Body.Reset()
+		runtime.GC()
 	}
+	runtime.GC()
 }
 
 func (app *SimpwebservApp)Run (host string, port uint16) { //运行实例
@@ -260,12 +442,15 @@ func (app *SimpwebservApp)Run (host string, port uint16) { //运行实例
 		return
 	}
 	app.Listener = listener
+	i := 0
 	for {
 		conn, err := app.Listener.Accept()
 		if err != nil {
 			log.Fatal("Server accept error: " + err.Error())
 			continue
 		}
-		go connectionHandler(conn, app)
+		runtime.GC()
+		go connectionHandler(conn, app, i)
+		i++
 	}
 }
