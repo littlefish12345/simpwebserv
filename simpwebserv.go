@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"net/url"
 	"io/ioutil"
+	"crypto/tls"
 	"container/list"
 )
 
@@ -53,10 +54,12 @@ type SimpwebservUrlNode struct { //单个path的节点
 type SimpwebservApp struct { //实例的结构体
 	Listener net.Listener
 	UrlMap SimpwebservUrlNode
+	UseHTTPS bool
+	HTTPSConfig *tls.Config
 }
 
 func App() SimpwebservApp { //生成新实例
-	app := SimpwebservApp{nil, SimpwebservUrlNode{"root", list.New(),false ,nil}}
+	app := SimpwebservApp{nil, SimpwebservUrlNode{"root", list.New(),false ,nil}, false, nil}
 	app.UrlMap.Name = "root"
 	app.UrlMap.NextLayer = list.New()
 	app.UrlMap.Function = nil
@@ -551,15 +554,34 @@ func connectionHandler(conn net.Conn, app *SimpwebservApp, num int) { //处理�
 	runtime.GC()
 }
 
+func (app *SimpwebservApp)SetHTTPS(pemPath string, keyPath string) error {
+	cert, err := tls.LoadX509KeyPair(pemPath, keyPath)
+	if err != nil {
+		return err
+	}
+	app.UseHTTPS = true
+	app.HTTPSConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
+	return nil
+}
+
 func (app *SimpwebservApp)Run(host string, port uint16) { //运行实例
 	allHost := host + ":" + strconv.Itoa(int(port))
-	log.Println("Server is starting at: " + allHost)
-	listener, err := net.Listen("tcp", allHost)
+	if app.UseHTTPS {
+		log.Println("Server is starting at: https://" + allHost)
+	} else {
+		log.Println("Server is starting at: http://" + allHost)
+	}
+
+	var err error
+	if app.UseHTTPS {
+		app.Listener, err = tls.Listen("tcp", allHost, app.HTTPSConfig)
+	} else {
+		app.Listener, err = net.Listen("tcp", allHost)
+	}
 	if err != nil {
 		log.Fatal("Server listen error: " + err.Error())
 		return
 	}
-	app.Listener = listener
 	i := 0
 	for {
 		conn, err := app.Listener.Accept()
