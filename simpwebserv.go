@@ -31,6 +31,7 @@ type SimpwebservResponse struct { //响应的结构体
 	Header map[string]string
 	Body *bytes.Buffer
 	ToDoCommand string
+	SetCookieList []string
 }
 
 type SimpwebservRequest struct { //请求的结构体
@@ -39,7 +40,6 @@ type SimpwebservRequest struct { //请求的结构体
 	Protocol string
 	Host string
 	Header map[string]string
-	//Body *bytes.Buffer
 	Conn net.Conn
 }
 
@@ -93,9 +93,19 @@ func (app *SimpwebservApp) Register (function func(*SimpwebservRequest) *Simpweb
 	nowNode.Function = function
 }
 
+func getGMTTime(offset string) string { //获取GMT时间
+	now := time.Now().UTC()
+	t, err := time.ParseDuration(offset)
+	if err == nil {
+		now = now.Add(t)
+	}
+	utcTime := now.Format(time.RFC1123)
+	return utcTime[:len(utcTime)-3] + "GMT"
+}
+
 func BuildBasicResponse() *SimpwebservResponse { //创建默认的响应
-	response := SimpwebservResponse{"HTTP/1.1", "200", "OK", make(map[string]string), new(bytes.Buffer), ""}
-	response.Header["Date"] = time.Now().UTC().Format(time.RFC1123) //懒得把UTC改成GMT了
+	response := SimpwebservResponse{"HTTP/1.1", "200", "OK", make(map[string]string), new(bytes.Buffer), "", make([]string, 0)}
+	response.Header["Date"] = getGMTTime("")
 	response.Header["Content-Type"] = "text/html; charset=utf-8"
 	return &response
 }
@@ -183,14 +193,24 @@ func (request *SimpwebservRequest)DecodeCookie() map[string]string { //解码coo
 	return cookieMap
 }
 
-func (response *SimpwebservResponse)SetCookie(cookieKey string, cookieValue string) { //设置cookie
-	cookieKey = url.QueryEscape(cookieKey)
-	cookieValue = url.QueryEscape(cookieValue)
-	if cookie, ok := response.Header["Set-Cookie"]; ok {
-		response.Header["Set-Cookie"] = cookie + "; " + cookieKey + "=" + cookieValue
-	} else {
-		response.Header["Set-Cookie"] = cookieKey + "=" + cookieValue
+func (response *SimpwebservResponse)SetCookie(cookieKey string, cookieValue string, expiresTime string, domain string, path string, secure bool,  httpOnly bool) { //设置cookie
+	cookieString := url.QueryEscape(cookieKey) + "=" + url.QueryEscape(cookieValue)
+	if expiresTime != "" {
+		cookieString = cookieString + "; Expires=" + getGMTTime(expiresTime)
 	}
+	if domain != "" {
+		cookieString = cookieString + "; Domain=" + domain
+	}
+	if path != "" {
+		cookieString = cookieString + "; Path=" + path
+	}
+	if secure {
+		cookieString = cookieString + "; Secure"
+	}
+	if httpOnly {
+		cookieString = cookieString + "; HttpOnly"
+	}
+	response.SetCookieList = append(response.SetCookieList, cookieString)
 }
 
 func SendStaticFile(path string, contentType string) *SimpwebservResponse { //传输一个静态文件
@@ -453,27 +473,8 @@ func connectionHandler(conn net.Conn, app *SimpwebservApp, num int) { //处理�
 				request.Header[lineList[0]] = lineList[1]
 			}
 		}
-/*
-		if contentLength, ok := request.Header["Content-Length"]; ok { //获取body
-			dataLength, _ := strconv.Atoi(contentLength)
-			bodyBuffer := make([]byte, bufferSize)
-			i := 0
-			for {
-				byteCount, err = conn.Read(bodyBuffer)
-				if err != nil {
-					log.Println(err)
-					return
-				}
-				i = i + byteCount
-				request.Body.Write(bodyBuffer)
-				if i == dataLength {
-					break
-				}
-			}
-		}
-*/
+
 		response := runFunction(request.Path, &request, app) //生成响应
-		//request.Body.Reset()
 
 		commandList := strings.Split(response.ToDoCommand, " ") //解析命令
 		var startPos int
@@ -500,6 +501,13 @@ func connectionHandler(conn net.Conn, app *SimpwebservApp, num int) { //处理�
 		for key, value := range(response.Header) {
 			header = header + key + ": " + value + "\r\n"
 		}
+
+		if len(response.SetCookieList) != 0 {
+			for i := 0; i < len(response.SetCookieList); i++ {
+				header = header + "Set-Cookie: " + response.SetCookieList[i] + "\r\n"
+			}
+		}
+
 		header = header + "\r\n"
 		conn.Write([]byte(header))
 		if len(commandList) != 0 {
