@@ -135,7 +135,6 @@ func BuildNotFoundResponse() *SimpwebservResponse { //创建404响应
 	response := BuildBasicResponse()
 	response.Code = "404"
 	response.CodeName = "Not Found"
-	response.Body.Write([]byte("404 Not Found"))
 	return response
 }
 
@@ -421,6 +420,28 @@ func SendFile(request *SimpwebservRequest, contentType string, filePath string, 
 	return response
 }
 
+func panicTrace() []byte { //获取pannic堆栈信息
+	s := []byte("/src/runtime/panic.go")
+	e := []byte("\ngoroutine ")
+	line := []byte("\n")
+	stack := make([]byte, bufferSize)
+	length := runtime.Stack(stack, true)
+	start := bytes.Index(stack, s)
+	stack = stack[start:length]
+	start = bytes.Index(stack, line) + 1
+	stack = stack[start:]
+	end := bytes.LastIndex(stack, line)
+	if end != -1 {
+		stack = stack[:end]
+	}
+	end = bytes.Index(stack, e)
+	if end != -1 {
+		stack = stack[:end]
+	}
+	stack = bytes.TrimRight(stack, "\n")
+	return stack
+}
+
 func runFunction(request *SimpwebservRequest, app *SimpwebservApp) *SimpwebservResponse { //通过path搜索函数并运行获取返回值
 	path, _ := url.QueryUnescape(strings.Split(request.Path, "?")[0]) //去掉GET请求部分
 	if path == "/" && app.UrlMap.Function != nil { //对于根目录的特殊处理
@@ -436,7 +457,10 @@ func runFunction(request *SimpwebservRequest, app *SimpwebservApp) *SimpwebservR
 				if app.NotFoundHandler != nil {
 					return app.NotFoundHandler(request)
 				} else {
-					return BuildNotFoundResponse()
+					response := BuildNotFoundResponse()
+					response.Body.Write([]byte("404 Not Found"))
+					response.Header["Content-Type"] = "text/plain; charset=utf-8"
+					return response
 				}
 			}
 			tempNode, _ = (j.Value).(*SimpwebservUrlNode)
@@ -455,7 +479,10 @@ func runFunction(request *SimpwebservRequest, app *SimpwebservApp) *SimpwebservR
 		if app.NotFoundHandler != nil {
 			return app.NotFoundHandler(request)
 		} else {
-			return BuildNotFoundResponse()
+			response := BuildNotFoundResponse()
+			response.Body.Write([]byte("404 Not Found"))
+			response.Header["Content-Type"] = "text/plain; charset=utf-8"
+			return response
 		}
 	}
 	response := nowNode.Function(request)
@@ -470,9 +497,11 @@ func connectionHandler(conn net.Conn, app *SimpwebservApp, num int) { //处理�
 				response = app.InternalServerErrorHandler((err).(error))
 			} else {
 				response = BuildInternalServerErrorResponse()
+				response.Header["Content-Type"] = "text/plain; charset=utf-8"
 				response.Body.Write([]byte("500 Internal Server Error"))
 				if app.DebugMode {
-					response.Body.Write([]byte("\r\n" + (err).(error).Error()))
+					response.Body.Write([]byte("\r\n"))
+					response.Body.Write(panicTrace())
 				}
 			}
 			conn.Write([]byte(response.Protocol + " " + response.Code + " " + response.CodeName + "\r\n"))
