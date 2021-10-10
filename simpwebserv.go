@@ -56,17 +56,20 @@ type SimpwebservApp struct { //实例的结构体
 	UrlMap SimpwebservUrlNode
 	UseHTTPS bool
 	HTTPSConfig *tls.Config
+	NotFoundHandler func(*SimpwebservRequest) *SimpwebservResponse
+	InternalServerErrorHandler func(error) *SimpwebservResponse
+	DebugMode bool
 }
 
 func App() SimpwebservApp { //生成新实例
-	app := SimpwebservApp{nil, SimpwebservUrlNode{"root", list.New(),false ,nil}, false, nil}
+	app := SimpwebservApp{nil, SimpwebservUrlNode{"root", list.New(),false ,nil}, false, nil, nil, nil, false}
 	app.UrlMap.Name = "root"
 	app.UrlMap.NextLayer = list.New()
 	app.UrlMap.Function = nil
 	return app
 }
 
-func (app *SimpwebservApp) Register (function func(*SimpwebservRequest) *SimpwebservResponse, path string) { //注册一个路径到一个函数上
+func (app *SimpwebservApp)Register(function func(*SimpwebservRequest) *SimpwebservResponse, path string) { //注册一个路径到一个函数上
 	pathList := strings.Split(path, "/")[1:]
 	includeBack := false
 	if pathList[len(pathList) - 1] == "" { //如果路径最后一个字符是/，那么以后的路径都会匹配到这个函数上
@@ -96,6 +99,14 @@ func (app *SimpwebservApp) Register (function func(*SimpwebservRequest) *Simpweb
 	nowNode.Function = function
 }
 
+func (app *SimpwebservApp)RegisterInternalServerErrorFunction(function func(error) *SimpwebservResponse) { //注册500函数
+	app.InternalServerErrorHandler = function
+}
+
+func (app *SimpwebservApp)RegisterNotFoundFunction(function func(*SimpwebservRequest) *SimpwebservResponse) { //注册404函数
+	app.NotFoundHandler = function
+}
+
 func getGMTTime(offset string) string { //获取GMT时间
 	now := time.Now().UTC()
 	t, err := time.ParseDuration(offset)
@@ -111,6 +122,13 @@ func BuildBasicResponse() *SimpwebservResponse { //创建默认的响应
 	response.Header["Date"] = getGMTTime("")
 	response.Header["Content-Type"] = "text/html; charset=utf-8"
 	return &response
+}
+
+func BuildInternalServerErrorResponse() *SimpwebservResponse { //创建500响应
+	response := BuildBasicResponse()
+	response.Code = "500"
+	response.CodeName = "Internal Server Error"
+	return response
 }
 
 func BuildNotFoundResponse() *SimpwebservResponse { //创建404响应
@@ -398,8 +416,8 @@ func SendFile(request *SimpwebservRequest, contentType string, filePath string, 
 	return response
 }
 
-func runFunction(path string, request *SimpwebservRequest, app *SimpwebservApp) *SimpwebservResponse { //通过path搜索函数并运行获取返回值
-	path = strings.Split(path, "?")[0] //去掉GET请求部分
+func runFunction(request *SimpwebservRequest, app *SimpwebservApp) *SimpwebservResponse { //通过path搜索函数并运行获取返回值
+	path, _ := url.QueryUnescape(strings.Split(request.Path, "?")[0]) //去掉GET请求部分
 	if path == "/" && app.UrlMap.Function != nil { //对于根目录的特殊处理
 		return app.UrlMap.Function(request)
 	}
@@ -410,13 +428,18 @@ func runFunction(path string, request *SimpwebservRequest, app *SimpwebservApp) 
 		j := nowNode.NextLayer.Front()
 		for {
 			if j == nil { //路径没注册返回404
-				return BuildNotFoundResponse()
+				if app.NotFoundHandler != nil {
+					return app.NotFoundHandler(request)
+				} else {
+					return BuildNotFoundResponse()
+				}
 			}
 			tempNode, _ = (j.Value).(*SimpwebservUrlNode)
 			if tempNode.Name == pathList[i] {
 				nowNode = tempNode
 				if nowNode.IncludeBack {
-					goto blurryPath
+					response := nowNode.Function(request)
+					return response
 				}
 				break
 			}
@@ -424,15 +447,49 @@ func runFunction(path string, request *SimpwebservRequest, app *SimpwebservApp) 
 		}
 	}
 	if nowNode.Function == nil { //函数不存在返回404
-		return BuildNotFoundResponse()
+		if app.NotFoundHandler != nil {
+			return app.NotFoundHandler(request)
+		} else {
+			return BuildNotFoundResponse()
+		}
 	}
-	blurryPath:
 	response := nowNode.Function(request)
 	return response
 }
 
 func connectionHandler(conn net.Conn, app *SimpwebservApp, num int) { //处理连接
-	defer conn.Close()
+	defer func() { //处理pannic
+		if err := recover(); err != nil {
+			var response *SimpwebservResponse
+			if app.InternalServerErrorHandler != nil {
+				response = app.InternalServerErrorHandler((err).(error))
+			} else {
+				response = BuildInternalServerErrorResponse()
+				response.Body.Write([]byte("500 Internal Server Error"))
+				if app.DebugMode {
+					response.Body.Write([]byte("\r\n" + (err).(error).Error()))
+				}
+			}
+			conn.Write([]byte(response.Protocol + " " + response.Code + " " + response.CodeName + "\r\n"))
+			header := ""
+			for key, value := range(response.Header) {
+					header = header + key + ": " + value + "\r\n"
+			}
+
+			if len(response.SetCookieList) != 0 {
+				for i := 0; i < len(response.SetCookieList); i++ {
+					header = header + "Set-Cookie: " + response.SetCookieList[i] + "\r\n"
+				}
+			}
+
+			header = header + "\r\n"
+			conn.Write([]byte(header))
+			conn.Write(response.Body.Bytes())
+			response.Body.Reset()
+		}
+		conn.Close()
+		runtime.GC()
+	}()
 	request := SimpwebservRequest{"", "", "", "", make(map[string]string), conn}
 	tempByte := make([]byte, 1)
 	var err error
@@ -466,7 +523,7 @@ func connectionHandler(conn net.Conn, app *SimpwebservApp, num int) { //处理�
 		requestList := strings.Split(headerList[0], " ") //解析协议，请求方式和路径
 		headerList = headerList[1:]
 		request.Method = requestList[0]
-		request.Path, _ = url.QueryUnescape(requestList[1])
+		request.Path = requestList[1]
 		request.Protocol = requestList[2]
 		request.Host = conn.RemoteAddr().String()
 
@@ -477,7 +534,7 @@ func connectionHandler(conn net.Conn, app *SimpwebservApp, num int) { //处理�
 			}
 		}
 
-		response := runFunction(request.Path, &request, app) //生成响应
+		response := runFunction(&request, app) //生成响应
 
 		commandList := strings.Split(response.ToDoCommand, " ") //解析命令
 		var startPos int
@@ -497,7 +554,8 @@ func connectionHandler(conn net.Conn, app *SimpwebservApp, num int) { //处理�
 		
 		response.Header["Connection"] = "Close" //先这样吧
 
-		log.Println(request.Host + " " + request.Method + " " + request.Path + " " + response.Code + " " + response.CodeName)
+		clearPath, _ := url.QueryUnescape(strings.Split(request.Path, "?")[0])
+		log.Println(request.Host + " " + request.Method + " " + clearPath + " " + response.Code + " " + response.CodeName)
 
 		conn.Write([]byte(response.Protocol + " " + response.Code + " " + response.CodeName + "\r\n"))
 		header := ""
@@ -554,7 +612,7 @@ func connectionHandler(conn net.Conn, app *SimpwebservApp, num int) { //处理�
 	runtime.GC()
 }
 
-func (app *SimpwebservApp)SetHTTPS(pemPath string, keyPath string) error {
+func (app *SimpwebservApp)SetHTTPS(pemPath string, keyPath string) error { //设置TLS
 	cert, err := tls.LoadX509KeyPair(pemPath, keyPath)
 	if err != nil {
 		return err
@@ -562,6 +620,10 @@ func (app *SimpwebservApp)SetHTTPS(pemPath string, keyPath string) error {
 	app.UseHTTPS = true
 	app.HTTPSConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
 	return nil
+}
+
+func (app *SimpwebservApp)SetDebugMode(onoff bool) { //设置DebugMode（就是在出现500时默认会不会在网页上显示err）
+	app.DebugMode = onoff
 }
 
 func (app *SimpwebservApp)Run(host string, port uint16) { //运行实例
