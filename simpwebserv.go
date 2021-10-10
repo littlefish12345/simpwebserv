@@ -38,6 +38,7 @@ type SimpwebservResponse struct { //响应的结构体
 type SimpwebservRequest struct { //请求的结构体
 	Method string
 	Path string
+	PurePath string
 	Protocol string
 	Host string
 	Header map[string]string
@@ -443,11 +444,10 @@ func panicTrace() []byte { //获取pannic堆栈信息
 }
 
 func runFunction(request *SimpwebservRequest, app *SimpwebservApp) *SimpwebservResponse { //通过path搜索函数并运行获取返回值
-	path, _ := url.QueryUnescape(strings.Split(request.Path, "?")[0]) //去掉GET请求部分
-	if path == "/" && app.UrlMap.Function != nil { //对于根目录的特殊处理
+	if request.PurePath == "/" && app.UrlMap.Function != nil { //对于根目录的特殊处理
 		return app.UrlMap.Function(request)
 	}
-	pathList := strings.Split(path, "/")[1:]
+	pathList := strings.Split(request.PurePath, "/")[1:]
 	nowNode := &app.UrlMap
 	var tempNode *SimpwebservUrlNode
 	for i := 0; i < len(pathList); i++ {
@@ -524,7 +524,7 @@ func connectionHandler(conn net.Conn, app *SimpwebservApp, num int) { //处理�
 		conn.Close()
 		runtime.GC()
 	}()
-	request := SimpwebservRequest{"", "", "", "", make(map[string]string), conn}
+	request := SimpwebservRequest{"", "", "", "", "", make(map[string]string), conn}
 	tempByte := make([]byte, 1)
 	var err error
 	var byteCount int
@@ -558,6 +558,7 @@ func connectionHandler(conn net.Conn, app *SimpwebservApp, num int) { //处理�
 		headerList = headerList[1:]
 		request.Method = requestList[0]
 		request.Path = requestList[1]
+		request.PurePath, _ = url.QueryUnescape(strings.Split(request.Path, "?")[0])
 		request.Protocol = requestList[2]
 		request.Host = conn.RemoteAddr().String()
 
@@ -588,8 +589,7 @@ func connectionHandler(conn net.Conn, app *SimpwebservApp, num int) { //处理�
 		
 		response.Header["Connection"] = "Close" //先这样吧
 
-		clearPath, _ := url.QueryUnescape(strings.Split(request.Path, "?")[0])
-		log.Println(request.Host + " " + request.Method + " " + clearPath + " " + response.Code + " " + response.CodeName)
+		log.Println(request.Host + " " + request.Method + " " + request.PurePath + " " + response.Code + " " + response.CodeName)
 
 		conn.Write([]byte(response.Protocol + " " + response.Code + " " + response.CodeName + "\r\n"))
 		header := ""
