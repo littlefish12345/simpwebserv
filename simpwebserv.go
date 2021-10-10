@@ -325,15 +325,18 @@ func (request *SimpwebservRequest)RecvFile(storePath string, name string, maxSiz
 								for {
 									byteCount, err = request.Conn.Read(buffer)
 									if err != nil {
+										os.Remove(storePath + "/" + filename)
 										return err
 									}
 									byteList = bytes.Split(append(lastBytes, buffer...), []byte("\r\n" + boundary))
-									if byteCount < bufferSize && len(byteList) == 1 { //特殊处理返回的没完的数据包
+									if byteCount < bufferSize && len(byteList) == 1 { //特殊处理返回的长度不足bufferSize的数据包
 										fileByteCount, err = f.Write(byteList[0][len(boundary)+2:byteCount+len(boundary)+2])
 										if err != nil {
+											os.Remove(storePath + "/" + filename)
 											return err
 										}
 										if fileByteCount != byteCount {
+											os.Remove(storePath + "/" + filename)
 											return IncompleteFile
 										}
 										allByteCount = allByteCount + fileByteCount
@@ -345,9 +348,11 @@ func (request *SimpwebservRequest)RecvFile(storePath string, name string, maxSiz
 									}
 									fileByteCount, err = f.Write(byteList[0][len(boundary)+2:])
 									if err != nil {
+										os.Remove(storePath + "/" + filename)
 										return err
 									}
 									if fileByteCount != len(byteList[0]) - len(boundary) - 2 {
+										os.Remove(storePath + "/" + filename)
 										return IncompleteFile
 									}
 									allByteCount = allByteCount + fileByteCount
