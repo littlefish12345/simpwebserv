@@ -534,6 +534,7 @@ func connectionHandler(conn net.Conn, app *SimpwebservApp, num int) { //处理�
 		for i := 0; ; i++ { //获取请求头
 			byteCount, err = conn.Read(tempByte)
 			if err != nil {
+				conn.Close()
 				return
 			}
 			if byteCount != 1 {
@@ -587,7 +588,7 @@ func connectionHandler(conn net.Conn, app *SimpwebservApp, num int) { //处理�
 			response.Header["Content-Length"] = strconv.Itoa(response.Body.Len())
 		}
 		
-		response.Header["Connection"] = "Close" //先这样吧
+		response.Header["Connection"] = "close" //先这样吧
 
 		log.Println(request.Host + " " + request.Method + " " + request.PurePath + " " + response.Code + " " + response.CodeName)
 
@@ -605,39 +606,41 @@ func connectionHandler(conn net.Conn, app *SimpwebservApp, num int) { //处理�
 
 		header = header + "\r\n"
 		conn.Write([]byte(header))
-		if len(commandList) != 0 {
-			if commandList[0] == "SendFile" { //下载文件的分段读取发送
-				f, _ := os.Open(filePath)
-				f.Seek(int64(startPos), io.SeekStart)
-				readLength := endPos - startPos + 1
-				buffer := make([]byte, bufferSize)
-				i := 0
-				for {
-					if readLength <= i + bufferSize {
-						break
+		if request.Method != "HEAD" {
+			if len(commandList) != 0 {
+				if commandList[0] == "SendFile" { //下载文件的分段读取发送
+					f, _ := os.Open(filePath)
+					f.Seek(int64(startPos), io.SeekStart)
+					readLength := endPos - startPos + 1
+					buffer := make([]byte, bufferSize)
+					i := 0
+					for {
+						if readLength <= i + bufferSize {
+							break
+						}
+						byteCount , err := f.Read(buffer)
+						if err != nil {
+							log.Println(err.Error())
+							return
+						}
+						conn.Write(buffer)
+						i = i + byteCount
 					}
-					byteCount , err := f.Read(buffer)
+					buffer = make([]byte, readLength - i)
+					_ , err := f.Read(buffer)
 					if err != nil {
 						log.Println(err.Error())
 						return
 					}
 					conn.Write(buffer)
-					i = i + byteCount
+				} else {
+					conn.Write(response.Body.Bytes())
 				}
-				buffer = make([]byte, readLength - i)
-				_ , err := f.Read(buffer)
-				if err != nil {
-					log.Println(err.Error())
-					return
-				}
-				conn.Write(buffer)
 			} else {
 				conn.Write(response.Body.Bytes())
 			}
-		} else {
-			conn.Write(response.Body.Bytes())
+			response.Body.Reset()
 		}
-		response.Body.Reset()
 		runtime.GC()
 
 		conn.Close()
