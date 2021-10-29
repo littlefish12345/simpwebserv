@@ -239,12 +239,18 @@ func (response *SimpwebservResponse) SetCookie(cookieKey string, cookieValue str
 func SendStaticFile(path string, contentType string) *SimpwebservResponse { //传输一个静态文件
 	f, err := os.Open(path)
 	if err != nil {
-		return BuildNotFoundResponse()
+		response := BuildNotFoundResponse()
+		response.Body.Write([]byte("404 Not Found"))
+		response.Header["Content-Type"] = "text/plain; charset=utf-8"
+		return response
 	}
 	defer f.Close()
 	data, err := ioutil.ReadAll(f)
 	if err != nil {
-		return BuildNotFoundResponse()
+		response := BuildNotFoundResponse()
+		response.Body.Write([]byte("404 Not Found"))
+		response.Header["Content-Type"] = "text/plain; charset=utf-8"
+		return response
 	}
 	response := BuildBasicResponse()
 	response.Header["Content-Type"] = contentType
@@ -394,7 +400,10 @@ func SendFile(request *SimpwebservRequest, contentType string, filePath string, 
 	response.Header["Content-Type"] = contentType
 	f, err := os.Stat(filePath)
 	if err != nil {
-		return BuildNotFoundResponse()
+		response := BuildNotFoundResponse()
+		response.Body.Write([]byte("404 Not Found"))
+		response.Header["Content-Type"] = "text/plain; charset=utf-8"
+		return response
 	}
 	fileEnd := f.Size() - 1
 	startPos := 0
