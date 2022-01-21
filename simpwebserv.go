@@ -167,6 +167,25 @@ func (request *SimpwebservRequest) DecodeGETRequest() map[string]string { //解�
 	return GETMap
 }
 
+func (request *SimpwebservRequest) GetPOSTBody() *bytes.Buffer { //解码POST的body部分
+	if request.Method == "POST" {
+		if contentLength, ok := request.Header["Content-Length"]; ok {
+			contentLengthInt, _ := strconv.Atoi(contentLength)
+			if contentLengthInt > bufferSize {
+				return nil
+			}
+			buffer := make([]byte, contentLengthInt)
+			byteCount, err := request.Conn.Read(buffer)
+			request.readedBytes = byteCount
+			if byteCount != contentLengthInt || err != nil {
+				return nil
+			}
+			return bytes.NewBuffer(buffer)
+		}
+	}
+	return nil
+}
+
 func (request *SimpwebservRequest) DecodePOSTFormRequest() map[string]string { //解码POST的form表单
 	formMap := make(map[string]string)
 	if request.Method == "POST" {
