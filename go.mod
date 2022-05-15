@@ -1,3 +1,3 @@
-module github.com/littlefish12345/simpwebserv
+module simpwebserv
 
 go 1.17
