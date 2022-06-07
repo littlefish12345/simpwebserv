@@ -10,7 +10,7 @@ import (
 )
 
 func App() *AppStruct { //创建一个app实例
-	app := AppStruct{nil, &UrlNode{make(map[string]*UrlNode), false, nil}, false, nil, nil, nil, false, false, false, 60}
+	app := AppStruct{nil, &UrlNode{make(map[string]*UrlNode), false, nil}, false, nil, nil, nil, false, false, false, 4, 60}
 	return &app
 }
 
@@ -74,6 +74,9 @@ func (app *AppStruct) loadConfig(config Config) error {
 		app.useTls = true
 		app.HTTPSConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
 	}
+	if config.MultiThreadAcceptNum != 0 {
+		app.multiThreadAcceptNum = config.MultiThreadAcceptNum
+	}
 	return nil
 }
 
@@ -107,7 +110,13 @@ func (app *AppStruct) Run(config Config) { //运行服务
 			log.Println("Server is starting at: http://" + allHost)
 		}
 	}
+	for i := 0; i < int(app.multiThreadAcceptNum)-1; i++ {
+		go app.acceptConn()
+	}
+	app.acceptConn()
+}
 
+func (app *AppStruct) acceptConn() {
 	for {
 		conn, err := app.listener.Accept()
 		if err != nil {

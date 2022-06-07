@@ -130,7 +130,7 @@ func (request *Request) SendFile(response *Response, path string, filename strin
 	}
 	defer f.Close()
 	fileStat, err := f.Stat()
-	if err != nil {
+	if err != nil || fileStat.IsDir() {
 		*response = *Build404Response()
 		return
 	}

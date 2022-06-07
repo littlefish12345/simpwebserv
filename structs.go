@@ -49,17 +49,19 @@ type AppStruct struct { //实例的结构体
 	debugMode                  bool
 	enableConsoleLog           bool
 	enableKeepAlive            bool
+	multiThreadAcceptNum       uint16
 	keepAliveTimeout           time.Duration
 }
 
 type Config struct {
-	Host              string
-	Port              uint16
-	UseTls            bool
-	DebugMode         bool
-	DisableConsoleLog bool
-	DisableKeepAlive  bool
-	KeepAliveTimeout  time.Duration
-	TlsPemPath        string
-	TlsKeyPath        string
+	Host                 string
+	Port                 uint16
+	UseTls               bool
+	DebugMode            bool
+	DisableConsoleLog    bool
+	DisableKeepAlive     bool
+	KeepAliveTimeout     time.Duration
+	TlsPemPath           string
+	TlsKeyPath           string
+	MultiThreadAcceptNum uint16
 }
