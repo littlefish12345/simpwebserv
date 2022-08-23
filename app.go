@@ -97,17 +97,19 @@ func (app *AppStruct) Run(config Config) { //运行服务
 		return
 	}
 
-	if app.useTls {
-		if config.Port == 443 {
-			log.Println("Server is starting at: https://" + config.Host)
+	if app.enableConsoleLog {
+		if app.useTls {
+			if config.Port == 443 {
+				log.Println("Server is starting at: https://" + config.Host)
+			} else {
+				log.Println("Server is starting at: https://" + allHost)
+			}
 		} else {
-			log.Println("Server is starting at: https://" + allHost)
-		}
-	} else {
-		if config.Port == 80 {
-			log.Println("Server is starting at: http://" + config.Host)
-		} else {
-			log.Println("Server is starting at: http://" + allHost)
+			if config.Port == 80 {
+				log.Println("Server is starting at: http://" + config.Host)
+			} else {
+				log.Println("Server is starting at: http://" + allHost)
+			}
 		}
 	}
 	for i := 0; i < int(app.multiThreadAcceptNum)-1; i++ {
