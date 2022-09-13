@@ -81,10 +81,8 @@ func (request *Request) DecodeUrlParameter() map[string]string {
 	var first string
 	for i := 0; i < len(parameterList); i++ {
 		parameterSplit = strings.Split(parameterList[i], "=")
-		if len(parameterSplit) == 2 {
-			first, _ = url.PathUnescape(parameterSplit[0])
-			parameterMap[first], _ = url.PathUnescape(parameterSplit[1])
-		}
+		first, _ = url.PathUnescape(parameterSplit[0])
+		parameterMap[first], _ = url.PathUnescape(strings.Join(parameterSplit[1:], "="))
 	}
 	return parameterMap
 }
