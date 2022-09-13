@@ -1,10 +1,12 @@
 package simpwebserv
 
 import (
+	"archive/zip"
 	"bytes"
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -128,123 +130,187 @@ func (request *Request) SendFile(response *Response, path string, filename strin
 	}
 	defer f.Close()
 	fileStat, err := f.Stat()
-	if err != nil || fileStat.IsDir() {
+	if err != nil {
 		*response = *Build404Response()
 		return
 	}
-	fileSize := fileStat.Size()
 
-	response.Header["Accept-Ranges"] = "bytes"
 	response.Header["Content-Type"] = "application/octet-stream"
 	response.Header["Content-Disposition"] = "attachment; filename=" + filename
 
-	if request.Method != "HEAD" {
-		var ok bool
-		var requestRangeString string
-		if requestRangeString, ok = request.Header["Range"]; ok {
-			response.Code = "206"
-			response.CodeName = "Partial Content"
-			requestRangeString = strings.Split(requestRangeString, "=")[1]
-			requestRangeSplit := strings.Split(requestRangeString, ", ")
-			var rangeSplit []string
-			var startPos int64
-			var endPos int64
+	if fileStat.IsDir() {
+		response.Header["Transfer-Encoding"] = "chunked"
+		if request.Method != "HEAD" {
+			pipeReader, pipeWriter := io.Pipe()
+			sendBuffer := make([]byte, fileSendBufferSize)
+			zipArchive := zip.NewWriter(pipeWriter)
+			go func() {
+				filepath.Walk(path, func(tempPath string, info os.FileInfo, _ error) error {
+					if tempPath == path {
+						return nil
+					}
+					header, _ := zip.FileInfoHeader(info)
+					header.Name = strings.TrimPrefix(tempPath, path+"\\")
 
-			rangeSplit = strings.Split(requestRangeSplit[0], "-")
-			startPos, err = strconv.ParseInt(rangeSplit[0], 10, 64)
+					if info.IsDir() {
+						header.Name += "/"
+					} else {
+						header.Method = zip.Store
+					}
+
+					writer, _ := zipArchive.CreateHeader(header)
+					if !info.IsDir() {
+						file, _ := os.Open(tempPath)
+						defer file.Close()
+						io.Copy(writer, file)
+					}
+					return nil
+				})
+				zipArchive.Close()
+				pipeWriter.Close()
+			}()
+			request.SendHeader(response)
+			for {
+				n, err := pipeReader.Read(sendBuffer)
+				if err == io.EOF {
+					break
+				}
+				if n == 0 {
+					continue
+				}
+				_, err = request.ConnWrite([]byte(strings.ToUpper(strconv.FormatInt(int64(n), 16)) + "\r\n"))
+				if err != nil {
+					request.conn.Close()
+					return
+				}
+				_, err = request.ConnWrite(sendBuffer[:n])
+				if err != nil {
+					request.conn.Close()
+					return
+				}
+				_, err = request.ConnWrite([]byte("\r\n"))
+				if err != nil {
+					request.conn.Close()
+					return
+				}
+			}
+			_, err := request.ConnWrite([]byte("0\r\n\r\n"))
 			if err != nil {
-				*response = *Build404DefaultResponse()
-				response.Code = "416"
-				response.CodeName = "Partial Content"
+				request.conn.Close()
 				return
 			}
+			return
+		}
+	} else {
+		response.Header["Accept-Ranges"] = "bytes"
+		fileSize := fileStat.Size()
+		response.Header["Content-Length"] = strconv.FormatInt(fileSize, 10)
+		if request.Method != "HEAD" {
+			var ok bool
+			var requestRangeString string
+			if requestRangeString, ok = request.Header["Range"]; ok {
+				response.Code = "206"
+				response.CodeName = "Partial Content"
+				requestRangeString = strings.Split(requestRangeString, "=")[1]
+				requestRangeSplit := strings.Split(requestRangeString, ", ")
+				var rangeSplit []string
+				var startPos int64
+				var endPos int64
 
-			if rangeSplit[1] == "" {
-				endPos = fileSize
-				rangeSplit[1] = strconv.FormatInt(fileSize, 10)
-			} else {
-				endPos, err = strconv.ParseInt(rangeSplit[0], 10, 64)
+				rangeSplit = strings.Split(requestRangeSplit[0], "-")
+				startPos, err = strconv.ParseInt(rangeSplit[0], 10, 64)
 				if err != nil {
 					*response = *Build404DefaultResponse()
 					response.Code = "416"
 					response.CodeName = "Partial Content"
 					return
 				}
-			}
-			if startPos > fileSize || endPos > fileSize || endPos < startPos {
-				*response = *Build404DefaultResponse()
-				response.Code = "416"
-				response.CodeName = "Partial Content"
-				return
-			}
-			response.Header["Content-Range"] = "bytes " + strconv.FormatInt(startPos, 10) + "-" + strconv.FormatInt(endPos-1, 10) + "/" + strconv.FormatInt(fileSize, 10)
-			restDataLength := endPos - startPos
-			response.Header["Content-Length"] = strconv.FormatInt(restDataLength, 10)
-			f.Seek(startPos, io.SeekStart)
-			buffer := make([]byte, fileSendBufferSize)
-			var n int
-			request.SendHeader(response)
-			for {
-				if restDataLength < fileSendBufferSize {
-					break
-				}
-				n, err = f.Read(buffer)
-				if err != nil {
-					panic(err)
-				}
-				restDataLength -= int64(n)
-				_, err = request.ConnWrite(buffer)
-				if err != nil {
-					request.conn.Close()
-					return
-				}
-			}
-			buffer = make([]byte, restDataLength)
-			_, err = f.Read(buffer)
-			if err != nil {
-				panic(err)
-			}
-			_, err = request.ConnWrite(buffer)
-			if err != nil {
-				request.conn.Close()
-				return
-			}
-		} else {
-			response.Header["Content-Length"] = strconv.FormatInt(fileSize, 10)
-			request.SendHeader(response)
 
-			restDataLength := fileSize
-			buffer := make([]byte, fileSendBufferSize)
-			var n int
-			for {
-				if restDataLength < fileSendBufferSize {
-					break
+				if rangeSplit[1] == "" {
+					endPos = fileSize
+					rangeSplit[1] = strconv.FormatInt(fileSize, 10)
+				} else {
+					endPos, err = strconv.ParseInt(rangeSplit[0], 10, 64)
+					if err != nil {
+						*response = *Build404DefaultResponse()
+						response.Code = "416"
+						response.CodeName = "Partial Content"
+						return
+					}
 				}
-				n, err = f.Read(buffer)
+				if startPos > fileSize || endPos > fileSize || endPos < startPos {
+					*response = *Build404DefaultResponse()
+					response.Code = "416"
+					response.CodeName = "Partial Content"
+					return
+				}
+				response.Header["Content-Range"] = "bytes " + strconv.FormatInt(startPos, 10) + "-" + strconv.FormatInt(endPos-1, 10) + "/" + strconv.FormatInt(fileSize, 10)
+				restDataLength := endPos - startPos
+				response.Header["Content-Length"] = strconv.FormatInt(restDataLength, 10)
+				f.Seek(startPos, io.SeekStart)
+				buffer := make([]byte, fileSendBufferSize)
+				var n int
+				request.SendHeader(response)
+				for {
+					if restDataLength < fileSendBufferSize {
+						break
+					}
+					n, err = f.Read(buffer)
+					if err != nil {
+						panic(err)
+					}
+					restDataLength -= int64(n)
+					_, err = request.ConnWrite(buffer)
+					if err != nil {
+						request.conn.Close()
+						return
+					}
+				}
+				buffer = make([]byte, restDataLength)
+				_, err = f.Read(buffer)
 				if err != nil {
 					panic(err)
 				}
-				restDataLength -= int64(n)
+				_, err = request.ConnWrite(buffer)
+				if err != nil {
+					request.conn.Close()
+					return
+				}
+			} else {
+				request.SendHeader(response)
+
+				restDataLength := fileSize
+				buffer := make([]byte, fileSendBufferSize)
+				var n int
+				for {
+					if restDataLength < fileSendBufferSize {
+						break
+					}
+					n, err = f.Read(buffer)
+					if err != nil {
+						panic(err)
+					}
+					restDataLength -= int64(n)
+					_, err = request.ConnWrite(buffer)
+					if err != nil {
+						request.conn.Close()
+						return
+					}
+				}
+				buffer = make([]byte, restDataLength)
+				_, err = f.Read(buffer)
+				if err != nil {
+					panic(err)
+				}
 				_, err = request.ConnWrite(buffer)
 				if err != nil {
 					request.conn.Close()
 					return
 				}
 			}
-			buffer = make([]byte, restDataLength)
-			_, err = f.Read(buffer)
-			if err != nil {
-				panic(err)
-			}
-			_, err = request.ConnWrite(buffer)
-			if err != nil {
-				request.conn.Close()
-				return
-			}
+			return
 		}
-		return
 	}
-	response.Header["Content-Length"] = strconv.FormatInt(fileSize, 10)
 	request.SendHeader(response)
 }
 
