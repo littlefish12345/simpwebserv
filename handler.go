@@ -42,6 +42,9 @@ func getFunction(app *AppStruct, path string) (bool, func(*Request) *Response) {
 	}
 	pathSplit := strings.Split(path, "/")
 	pathSplit = pathSplit[1:]
+	if len(pathSplit) == 0 {
+		return false, nil
+	}
 	if pathSplit[len(pathSplit)-1] == "" {
 		pathSplit = pathSplit[0 : len(pathSplit)-1]
 	}
